@@ -9,8 +9,13 @@ import (
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common/math"
 	"strconv"
-	"github.com/neo4l/x/jsonrpc2"
 	"github.com/ethereum/go-ethereum/common/hexutil"
+	"net/http"
+	"bytes"
+	"encoding/json"
+	"math/rand"
+	"io"
+	"errors"
 )
 
 const (
@@ -66,7 +71,7 @@ func getEthSigningKeyAndStatus() (signingKeyAddress string, err error) {
 	ethCallRequest.Data = hexutil.Encode(requestDataByte)
 	params[0] = ethCallRequest
 	params[1] = "latest"
-	err = jsonrpc2.Call(ethNodeUrl, "eth_call", params, &reply)
+	err = Call(ethNodeUrl, "eth_call", params, &reply)
 	if err != nil {
 		log.Println("in getEthSigningKeyAndStatus Call error:", err.Error())
 		return "", err
@@ -83,4 +88,88 @@ func createSignHash(data []byte) []byte {
 type EthCallRequest struct {
 	To string `json:"to"`
 	Data string `json:"data"`
+}
+
+func Call(url string, method string, params interface{}, reply interface{}) error {
+	j, err := EncodeReqObj(method, params)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(j))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	client := new(http.Client)
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	//log.Printf("result.Body: %s", resp.Body)
+	return DecodeResObj(resp.Body, &reply)
+}
+
+// EncodeReqObj encodes parameters for a JSON-RPC client request.
+func EncodeReqObj(method string, args interface{}) ([]byte, error) {
+	c := &ReqObj{
+		Version: "2.0",
+		Method:  method,
+		Params:  args,
+		Id:      uint64(rand.Int63()),
+	}
+	return json.Marshal(c)
+}
+
+// DecodeResObj decodes the response body of a client request into
+// the interface reply.
+func DecodeResObj(r io.Reader, reply interface{}) error {
+	var c ResObj
+	if err := json.NewDecoder(r).Decode(&c); err != nil {
+		return err
+	}
+	if c.Error != nil {
+		return errors.New("in DecodeResObj return error.")
+	}
+	if c.Result == nil {
+		return errors.New("response body is null")
+	}
+	return json.Unmarshal(*c.Result, reply)
+}
+
+type ReqObj struct {
+	// JSON-RPC protocol.
+	Version string `json:"jsonrpc"`
+
+	// A String containing the name of the method to be invoked.
+	Method string `json:"method"`
+
+	// Object to pass as request parameter to the method.
+	Params interface{} `json:"params"`
+
+	// The request id. This can be of any type. It is used to match the
+	// response with the request that it is replying to.
+	Id uint64 `json:"id"`
+}
+// ResObj represents a JSON-RPC response returned to a client.
+type ResObj struct {
+	Version string           `json:"jsonrpc"`
+	Result  *json.RawMessage `json:"result"`
+	Error   *json.RawMessage `json:"error"`
+	Id      uint64           `json:"id"`
+}
+
+// JSON-RPC error object
+type ErrorCode int
+
+type Error struct {
+	// A Number that indicates the error type that occurred.
+	Code ErrorCode `json:"code"` /* required */
+
+	// A String providing a short description of the error.
+	// The message SHOULD be limited to a concise single sentence.
+	Message string `json:"message"` /* required */
+
+	// A Primitive or Structured value that contains additional information about the error.
+	Data interface{} `json:"data"` /* optional */
 }
